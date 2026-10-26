@@ -234,6 +234,18 @@ def print_sample(input_ids: list[int], loss_mask: list[bool], tokenizer: PreTrai
     rich_print(text)
 
 
+def loss_log_scale(num_micro_batches: int, data_parallel_size: int) -> int:
+    """Scale a rank's loss share before ``TensorStats`` averages it.
+
+    ``TensorStats.compute_stats`` divides by the number of appended values: one loss per
+    micro batch on every data-parallel rank. The appended scalar is that rank's share of the
+    global per-token objective, so multiplying by both dimensions recovers the objective.
+    Context-parallel ranks hold a copy of the same loss (already corrected by ``cp_size``),
+    so the data-parallel size excludes context parallelism.
+    """
+    return num_micro_batches * data_parallel_size
+
+
 class TensorStats:
     """Accumulates a step's tensor metrics on the GPU and reduces them across ranks once per step.
 

@@ -64,6 +64,7 @@ from prime_rl.trainer.utils import (
     filter_rl_trainer_tensor_stats_for_wandb,
     finish_backward,
     get_ckpt_disk_metrics,
+    loss_log_scale,
     prepare_gradient_offload,
     scale_gradients_,
     setup_full_cpu_optimizer_offload,
@@ -305,6 +306,11 @@ def train(config: TrainerConfig):
         logger.debug(f"Loaded batch in {format_time(load_data_time)}")
 
         batch_size = len(micro_batches)
+        # `TensorStats` averages the loss over every micro batch on every data-parallel rank.
+        # Each appended value is one rank's share of the global per-token objective, so undo
+        # both dimensions to log the objective itself. CP ranks hold a copy of the same loss
+        # after the `cp_size` correction below, hence dp excludes cp.
+        loss_scale = loss_log_scale(batch_size, parallel_dims.dp_replicate * parallel_dims.dp_shard)
         memory_profiler = None
         if config.memory_profiler_path is not None:
             memory_profiler = MemoryProfiler(progress.step, config.memory_profiler_path)
@@ -548,8 +554,10 @@ def train(config: TrainerConfig):
             mm_kwargs = None
 
             # Every CP rank computes the whole sequence's loss, and the global normalizers count each
-            # sequence once per CP rank (gradients still sum correctly), so undo that for the logged value.
-            tensor_stats.add("loss", loss * cp_size)
+            # sequence once per CP rank (gradients still sum correctly), so undo that for the logged
+            # value. `loss_scale` then cancels the micro-batch and data-parallel averaging in
+            # `TensorStats.compute_stats`, leaving the global per-token objective.
+            tensor_stats.add("loss", loss * cp_size * loss_scale)
 
             tensor_stats.add("entropy", out["entropy"], loss_mask, env_ids, env_names)
 
